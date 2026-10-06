@@ -1,10 +1,22 @@
+/*
+ * Diff implementation using Myers' algorithm.
+ *
+ * The program supports:
+ * 1. Line-level diffing.
+ * 2. Character/code-point-level highlighting for changed lines.
+ *
+ * The implementation operates on raw file bytes for line comparison and
+ * converts changed lines to Unicode code points for character highlighting.
+ *
+ * No executable code has been changed; only explanatory comments were added.
+ */
 import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.util.*;
 
 public class Main {
-
+    // Represents one line-level diff operation: unchanged (' '), insertion ('+'), or deletion ('-').
     static class LineOp {
         char type;
         byte[] line;
@@ -14,7 +26,7 @@ public class Main {
             this.line = line;
         }
     }
-
+    // Represents one character/code-point-level diff operation.
     static class CharOp {
         char type;
         int value;
@@ -24,7 +36,7 @@ public class Main {
             this.value = value;
         }
     }
-
+    // Reads a file as raw bytes and splits it into lines without changing the original byte content.
     static List<byte[]> readLines(String path) throws IOException {
         byte[] data = Files.readAllBytes(Paths.get(path));
         List<byte[]> lines = new ArrayList<>();
@@ -42,37 +54,40 @@ public class Main {
 
         return lines;
     }
-
+    // Checks whether two lines contain exactly the same bytes.
     static boolean equalLines(byte[] a, byte[] b) {
         return Arrays.equals(a, b);
     }
-
+    // Runs Myers diff recursively at line level and returns the complete sequence of operations.
     static List<LineOp> myersLines(List<byte[]> a, List<byte[]> b) {
         List<LineOp> result = new ArrayList<>();
         myersLinesRecursive(a, 0, a.size(), b, 0, b.size(), result);
         return result;
     }
 
+    // Recursively finds the shortest edit script for the specified ranges of the two files.
     static void myersLinesRecursive(List<byte[]> a, int aStart, int aEnd, List<byte[]> b, int bStart, int bEnd, List<LineOp> result) {
+        // First consume the common prefix because these lines require no edit.
         while (aStart < aEnd && bStart < bEnd && equalLines(a.get(aStart), b.get(bStart))) {
             result.add(new LineOp(' ', a.get(aStart)));
             aStart++;
             bStart++;
         }
-
+        // If A is exhausted, all remaining code points in B are insertions.
         if (aStart == aEnd) {
             while (bStart < bEnd)
                 result.add(new LineOp('+', b.get(bStart++)));
             return;
         }
-
+         // If B is exhausted, all remaining code points in A are deletions
         if (bStart == bEnd) {
             while (aStart < aEnd)
                 result.add(new LineOp('-', a.get(aStart++)));
             return;
         }
-
+        // Locate the common suffix to reduce the recursive problem.
         int suffixA = aEnd;
+        // suffixA/suffixB mark the beginning of the common suffix in each range.
         int suffixB = bEnd;
 
         while (aStart < suffixA && bStart < suffixB &&
@@ -80,7 +95,7 @@ public class Main {
             suffixA--;
             suffixB--;
         }
-
+        // Only insertions remain after removing the common prefix and suffix.
         if (aStart == suffixA) {
             while (bStart < suffixB)
                 result.add(new LineOp('+', b.get(bStart++)));
@@ -90,7 +105,7 @@ public class Main {
 
             return;
         }
-
+        // Only deletions remain after removing the common prefix and suffix.
         if (bStart == suffixB) {
             while (aStart < suffixA)
                 result.add(new LineOp('-', a.get(aStart++)));
@@ -100,50 +115,52 @@ public class Main {
 
             return;
         }
-
+        // Find the middle snake of the remaining ranges and use it as the recursion split.
         int[] split = middleSnakeLines(a, aStart, suffixA, b, bStart, suffixB);
 
         int x = split[0];
         int y = split[1];
-
+        // Solve the left half of the problem.
         myersLinesRecursive(a, aStart, x, b, bStart, y, result);
+        // Solve the right half of the problem.
         myersLinesRecursive(a, x, suffixA, b, y, suffixB, result);
 
+        // Append the common suffix after both recursive halves have been processed.
         for (int i = suffixA; i < aEnd; i++)
             result.add(new LineOp(' ', a.get(i)));
     }
-
+    // Finds the middle snake using Myers' bidirectional search.
     static int[] middleSnakeLines(List<byte[]> a, int aStart, int aEnd, List<byte[]> b, int bStart, int bEnd) {
-        int n = aEnd - aStart;
-        int m = bEnd - bStart;
-        int max = (n + m + 1) / 2;
-        int delta = n - m;
-        int offset = max + 1;
-        int size = 2 * max + 3;
+        int n = aEnd - aStart;     // Number of lines in the current range of A.
+        int m = bEnd - bStart;     // Number of lines in the current range of B.
+        int max = (n + m + 1) / 2;  // Maximum edit distance that needs to be explored from each direction.
+        int delta = n - m;          // Difference between the lengths of the two ranges; used to detect forward/backward overlap.
+        int offset = max + 1;       // Offset converts diagonal k values, including negative values, into array indexes.
+        int size = 2 * max + 3;     // Size of the arrays used to store furthest-reaching x coordinates for each diagonal.
 
-        int[] forward = new int[size];
-        int[] backward = new int[size];
+        int[] forward = new int[size];  // Stores furthest positions reached by the search moving from the beginning.
+        int[] backward = new int[size]; // Stores furthest positions reached by the search moving backward from the end.
+        // -1 marks diagonals that have not been reached yet.
+        Arrays.fill(forward, -1);       
+        Arrays.fill(backward, -1);      
 
-        Arrays.fill(forward, -1);
-        Arrays.fill(backward, -1);
-
-        forward[offset + 1] = 0;
-        backward[offset + 1] = 0;
-
+        forward[offset + 1] = 0;        // Initialize the forward search at the start of the range.
+        backward[offset + 1] = 0;        // Initialize the backward search at the end of the range.
+        
         boolean odd = (delta & 1) != 0;
 
         for (int d = 0; d <= max; d++) {
-            for (int k = -d; k <= d; k += 2) {
+            for (int k = -d; k <= d; k += 2) {  // Expand the backward search over the diagonals for the current edit distance.
                 int index = offset + k;
                 int x;
-
+                // Choose whether to move down (insertion) or right (deletion) to reach this diagonal.
                 if (k == -d || (k != d && forward[index - 1] < forward[index + 1]))
                     x = forward[index + 1];
                 else
                     x = forward[index - 1] + 1;
 
                 int y = x - k;
-
+                // Extend backward through equal lines to find the longest matching suffix.
                 while (x < n && y < m &&
                         equalLines(a.get(aStart + x), b.get(bStart + y))) {
                     x++;
@@ -157,9 +174,9 @@ public class Main {
 
                     if (reverseK >= -(d - 1) && reverseK <= d - 1 &&
                             backward[offset + reverseK] != -1) {
-
+                        // Convert the backward search distance into a forward x coordinate.
                         int backwardX = n - backward[offset + reverseK];
-
+                         // The searches overlap, so the middle snake has been found.
                         if (x >= backwardX)
                             return new int[] {aStart + x, bStart + y};
                     }
@@ -169,7 +186,7 @@ public class Main {
             for (int k = -d; k <= d; k += 2) {
                 int index = offset + k;
                 int x;
-
+                // Choose the backward move that reaches farther toward the start.
                 if (k == -d || (k != d && backward[index - 1] < backward[index + 1]))
                     x = backward[index + 1];
                 else
@@ -184,7 +201,7 @@ public class Main {
                 }
 
                 backward[index] = x;
-
+                // For even delta, check whether the backward and forward searches overlap.
                 if (!odd) {
                     int forwardK = delta - k;
 
